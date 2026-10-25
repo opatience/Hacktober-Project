@@ -24,6 +24,7 @@
 
   async function api(path, options = {}) {
     const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
+    if (response.status === 401) { window.location.href = '/login'; throw new Error('Log in to continue.'); }
     if (response.status === 204) return {};
     let data;
     try { data = await response.json(); } catch { throw new Error('The server returned an unreadable response. Try again.'); }
@@ -180,7 +181,7 @@
       state.calendar.render();
     }
     state.calendar.removeAllEvents();
-    state.events.forEach((event) => {
+    (state.calendarEvents || state.events).forEach((event) => {
       const date = eventDate(event);
       if (!date.localDate) return;
       let start = date.localDate;
@@ -194,7 +195,7 @@
           } catch { start = date.localDate; }
         }
       }
-      state.calendar.addEvent({ id: event.event_id, title: event.title || 'Club event', start, allDay: !date.hasExactTime, url: sourceUrl(event) });
+      state.calendar.addEvent({ id: event.event_id, title: event.title || 'Club event', start, allDay: !date.hasExactTime, url: sourceUrl(event), color: event.is_past ? '#b8b2c4' : undefined });
     });
   }
 
@@ -207,8 +208,11 @@
   async function loadEvents() {
     const params = new URLSearchParams({ horizon_days: state.preferences.horizon_days || 30, free_only: Boolean(state.preferences.free_only), followed_only: Boolean(state.preferences.followed_only) });
     if (state.query) params.set('q', state.query);
-    const data = await api(`/v1/events?${params}`);
+    const shift = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toLocaleDateString('en-CA'); };
+    const calendarParams = new URLSearchParams({ include_past: true, from_date: shift(-45), through_date: shift(45), limit: 50 });
+    const [data, calendarData] = await Promise.all([api(`/v1/events?${params}`), api(`/v1/events?${calendarParams}`)]);
     state.events = data.events || [];
+    state.calendarEvents = calendarData.events || [];
     updateMeta(data.meta, data.warnings);
     renderEvents();
   }

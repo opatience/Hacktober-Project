@@ -1,4 +1,4 @@
--- Curated public club/account mappings confirmed for this project.
+-- Optional display names for known Purdue club accounts. Any other account gets a club automatically.
 -- No posts, events, admission prices, dates or user follows are generated.
 USE ROLE HACKATHON_OWNER;
 MERGE INTO HACKATHON_DB.APP.CLUBS AS target
@@ -9,10 +9,10 @@ USING (
         ('buildpurdue', 'Build Purdue'),
         ('helloworldpurdue', 'Hello World Purdue')
 ) AS source ON target.SLUG = source.USERNAME
-WHEN MATCHED THEN UPDATE SET target.IS_VERIFIED = TRUE,
+WHEN MATCHED THEN UPDATE SET target.NAME = source.CLUB_NAME,
     target.UPDATED_AT = CURRENT_TIMESTAMP()
-WHEN NOT MATCHED THEN INSERT (CLUB_ID, SLUG, NAME, IS_VERIFIED, IS_ACTIVE)
-VALUES ('club-' || source.USERNAME, source.USERNAME, source.CLUB_NAME, TRUE, TRUE);
+WHEN NOT MATCHED THEN INSERT (CLUB_ID, SLUG, NAME, IS_ACTIVE)
+VALUES ('club-' || source.USERNAME, source.USERNAME, source.CLUB_NAME, TRUE);
 
 MERGE INTO HACKATHON_DB.APP.INSTAGRAM_ACCOUNTS AS target
 USING (

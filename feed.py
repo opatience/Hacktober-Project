@@ -75,6 +75,7 @@ def build_feed(events, preferences, follows, query="", filters=None, semantic_id
     through_day = _day(filters["through_date"]) if filters.get("through_date") else today + timedelta(days=horizon)
     if through_day < from_day or (through_day - from_day).days > 90:
         raise ValueError("Choose an ordered date range of at most 90 days.")
+    include_past = _switch(filters.get("include_past", False))
     free_only = _switch(filters.get("free_only", preferences.get("free_only", False)))
     followed_only = _switch(filters.get("followed_only", preferences.get("followed_only", False)))
     interest_ids = set(preferences.get("interest_tag_ids") or [])
@@ -91,7 +92,7 @@ def build_feed(events, preferences, follows, query="", filters=None, semantic_id
         event_id = str(event.get("event_id", ""))
         if not event_id or event_id in seen or event.get("status", "published") != "published":
             continue
-        if event.get("club_active") is False or event.get("is_verified") is False:
+        if event.get("club_active") is False:
             continue
         seen.add(event_id)
         event_zone = ZoneInfo(event.get("event_timezone") or PURDUE_ZONE)
@@ -103,9 +104,8 @@ def build_feed(events, preferences, follows, query="", filters=None, semantic_id
             continue
         if precision not in {"exact", "date_only"} or not from_day <= local_day <= through_day:
             continue
-        if precision == "exact" and start < now:
-            continue
-        if precision == "date_only" and local_day < now.astimezone(event_zone).date():
+        event["is_past"] = start < now if precision == "exact" else local_day < now.astimezone(event_zone).date()
+        if event["is_past"] and not include_past:
             continue
         tags = event.get("tags") or []
         event_tag_ids = set(event.get("tag_ids") or [tag["tag_id"] for tag in tags])

@@ -1,10 +1,11 @@
 import os
 import secrets
+import re
 import threading
-import uuid
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 load_dotenv()
 
@@ -20,10 +21,62 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
 _refresh_lock = threading.Lock()
 
 
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+
+
+class Unauthenticated(Exception):
+    pass
+
+
 def context():
-    subject = session.setdefault('subject', 'guest:' + str(uuid.uuid4()))
     store = storage.get_store()
-    return store, store.current_user(subject, display_name='Student')
+    user = store.user_by_id(session['user_id']) if session.get('user_id') else None
+    if user is None:
+        session.clear()
+        raise Unauthenticated()
+    return store, user
+
+
+@app.errorhandler(Unauthenticated)
+def unauthenticated(_):
+    return jsonify(error={'code': 'unauthenticated', 'message': 'Log in first.'}), 401
+
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '')
+        if not EMAIL_RE.match(email) or len(email) > 320:
+            flash('Enter a valid email.')
+        elif len(password) < 8:
+            flash('Password must be at least 8 characters.')
+        else:
+            user = storage.get_store().create_account(email, generate_password_hash(password))
+            if user:
+                session.clear()
+                session['user_id'] = user['user_id']
+                return redirect(url_for('index'))
+            flash('An account with that email already exists.')
+    return render_template('auth.html', mode='signup')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        user = storage.get_store().user_by_email(request.form.get('email', '').strip().lower())
+        if user and user.get('password_hash') and check_password_hash(user['password_hash'], request.form.get('password', '')):
+            session.clear()
+            session['user_id'] = user['user_id']
+            return redirect(url_for('index'))
+        flash('Wrong email or password.')
+    return render_template('auth.html', mode='login')
+
+
+@app.post('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 
 def payload():
@@ -68,7 +121,11 @@ def dependency_error(error):
 
 @app.get('/')
 def index():
-    return render_template('index.html')
+    try:
+        _, user = context()
+    except Unauthenticated:
+        return redirect(url_for('login'))
+    return render_template('index.html', user=user)
 
 
 @app.get('/v1/status')

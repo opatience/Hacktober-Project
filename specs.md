@@ -13,8 +13,8 @@ For this handoff, use these decisions without blocking on framework choices:
 | Decision | v1 contract |
 |---|---|
 | Database | Snowflake standard tables in `HACKATHON_DB.APP`; all application data there. |
-| Auth | Existing backend auth provider; store its namespaced subject. No app passwords in Snowflake. |
-| Follows | Users follow Instagram accounts. Accounts optionally map to curated Purdue clubs. Arbitrary accounts can appear in newsletters; only mapped clubs publish club events. |
+| Auth | Email + password, implemented in the Flask backend (`auth.py`). No OAuth/external auth provider. `USERS.PASSWORD_HASH` stores a salted werkzeug hash (scrypt/pbkdf2), never the plain-text password. The browser holds only a signed Flask session cookie containing `USER_ID`. |
+| Follows | Users follow Instagram accounts. Each account gets a `CLUBS` row automatically the first time it publishes an event (slug and name = the username), so every followed account's events can appear in the calendar. There is no club verification step. |
 | Retrieval and agent | Cortex Search manages event embeddings; Cortex Agent `EVENT_ASSISTANT` uses the event search service. No separate vector database or manually maintained embedding columns. |
 | Personalization | Backend combines follows, known tags, free-text preferences, current event facts, and search rank. The model proposes interpretations; deterministic checks decide validity and eligibility. |
 | Deployment | One backend instance and one serialized database write dispatcher for the hackathon. Instaloader runs outside Snowflake. Model inference and event search run inside Snowflake. |
@@ -59,7 +59,7 @@ One teammate may fill several lanes. Nobody independently renames columns, chang
 
 | # / table | Key and relationships | Columns / purpose |
 |---|---|---|
-| 1. `USERS` | PK `USER_ID`; natural unique `AUTH_SUBJECT` | `USER_ID`, `AUTH_SUBJECT` (`issuer:subject`), `DISPLAY_NAME?`, `EMAIL?`, `TIMEZONE`, `CREATED_AT`, `UPDATED_AT`, `DELETED_AT?`. Email is optional and not a login key. |
+| 1. `USERS` | PK `USER_ID`; natural unique `EMAIL` (and `AUTH_SUBJECT`) | `USER_ID`, `AUTH_SUBJECT` (always `local:<email>`; kept so an auth provider can be added later), `EMAIL` (lowercased, required, the login key), `PASSWORD_HASH` (werkzeug hash; plain text is never stored), `DISPLAY_NAME?`, `TIMEZONE`, `CREATED_AT`, `UPDATED_AT`, `DELETED_AT?`. Sign-up checks for an existing email inside the insert transaction because Snowflake does not enforce `UNIQUE`. |
 | 2. `USER_PREFERENCES` | PK/FK `USER_ID → USERS`; exactly one row per active app user | `PREFERENCE_TEXT`, `INTEREST_TAG_IDS` (array of active tag-ID strings), `EXCLUDED_TAG_IDS` (same), `FOLLOWED_ONLY`, `FREE_ONLY`, `HORIZON_DAYS` (1–90, default 30), `VERSION`, `UPDATED_AT`. User creation creates an empty default preference row in the same transaction. |
 | 3. `USER_FOLLOWS` | Composite PK `(USER_ID, ACCOUNT_ID)`; FKs to `USERS` and `INSTAGRAM_ACCOUNTS` | `USER_ID`, `ACCOUNT_ID`, `CREATED_AT`. Unfollow deletes this relationship; never deletes the shared account. |
 
@@ -69,7 +69,7 @@ Interest arrays deliberately avoid a twelfth join table. Validate every array el
 
 | # / table | Key and relationships | Columns / purpose |
 |---|---|---|
-| 4. `CLUBS` | PK `CLUB_ID`; natural unique `SLUG` | `NAME`, `DESCRIPTION?`, `CAMPUS` (default `purdue-west-lafayette`), `WEBSITE_URL?`, `IS_VERIFIED`, `IS_ACTIVE`, `CREATED_AT`, `UPDATED_AT`. Slug is a stable application label. `IS_VERIFIED` means curated by the team, not official Purdue endorsement. |
+| 4. `CLUBS` | PK `CLUB_ID`; natural unique `SLUG` | `NAME`, `DESCRIPTION?`, `CAMPUS` (default `purdue-west-lafayette`), `WEBSITE_URL?`, `IS_ACTIVE`, `CREATED_AT`, `UPDATED_AT`. Slug is a stable application label. Auto-created from the Instagram account; it is not an official Purdue endorsement. |
 | 5. `INSTAGRAM_ACCOUNTS` | PK `ACCOUNT_ID`; natural unique normalized `USERNAME`; unique `INSTAGRAM_USER_ID?`; optional FK `CLUB_ID → CLUBS` | `DISPLAY_NAME?`, `BIO?`, `PROFILE_URL`, `IS_ACTIVE`, `INGESTION_STATUS`, `LAST_ATTEMPT_AT?`, `LAST_SUCCESS_AT?`, `NEXT_RETRY_AT?`, `LAST_ERROR?`, `CREATED_AT`, `UPDATED_AT`. Many accounts may map to one club; one account maps to at most one club. |
 | 6. `TAGS` | PK `TAG_ID`; natural unique `SLUG` | `LABEL`, `CATEGORY`, `DESCRIPTION?`, `IS_ACTIVE`, `CREATED_AT`. Categories: `topic`, `activity`, `audience`, `format`. Curated vocabulary; extraction cannot create new tags. |
 | 7. `CLUB_TAGS` | Composite PK `(CLUB_ID, TAG_ID)`; FKs to `CLUBS`, `TAGS` | `SOURCE` (`manual` or `extracted`), `CONFIDENCE?`, `CREATED_AT`. General club interests, separate from a particular event's subject. |
@@ -113,7 +113,7 @@ Use parameter binding for values; SQL object names come from fixed configuration
 | `DATE_PRECISION` | `exact`, `date_only`, `unknown`. `exact`: supported date and clock time. `date_only`: supported day but no clock time. `unknown`: not publishable. |
 | Money and confidence | `IS_FREE = NULL` means unknown, not free. `PRICE_AMOUNT >= 0` if present; `IS_FREE=TRUE` requires explicit evidence and amount null or 0. Confidence is null or 0–1; it is a model signal, not a calibrated probability. |
 
-Publish only when the club is active and team-verified, the title is nonempty, date evidence resolves to a real occurrence, `START_AT` and `LOCAL_START_DATE` agree in `EVENT_TIMEZONE`, and a live source with field evidence exists. `END_AT`, if known, must be later than `START_AT`. Unknown location or cost can remain null and must be displayed as unknown. Set a conservative initial model-confidence gate of 0.8 **in addition to** field evidence; manual review can publish verified facts without a model score.
+Publish only when the club is active, the title is nonempty, date evidence resolves to a real occurrence, `START_AT` and `LOCAL_START_DATE` agree in `EVENT_TIMEZONE`, and a live source with field evidence exists. `END_AT`, if known, must be later than `START_AT`. Unknown location or cost can remain null and must be displayed as unknown. Set a conservative initial model-confidence gate of 0.8 **in addition to** field evidence; manual review can publish verified facts without a model score.
 
 Store instants as `TIMESTAMP_TZ`; set connection timezone to UTC. Preserve the IANA zone separately because an offset does not encode future DST rules. Purdue West Lafayette default: `America/Indiana/Indianapolis`. For `date_only`, encode local midnight as `START_AT` for sorting, preserve `DATE_PRECISION`, and display **“Time not announced”**, never “12:00 AM.” `END_AT` stays null unless an end is supported. Do not guess a missing year: resolve only with explicit surrounding source context or leave draft. Relative dates must use the post's local date, not the extraction date.
 
@@ -183,15 +183,15 @@ Request structured JSON output from Snowflake inference, then validate it again 
 }
 ```
 
-The worker injects `post_id`, hash and version from trusted job context; a model cannot override them. Evidence `kind` is `caption` or `ocr`; OCR evidence additionally identifies `media_index`. Require a supporting excerpt for each non-null asserted date, time, location, cost and URL. Check excerpts against the captured source text; they are not instructions. Fields without support become null or block publication. Do not let the model assign `USER_ID`, `CLUB_ID`, stable source keys or final event IDs. The mapped account determines the primary hosting club.
+The worker injects `post_id`, hash and version from trusted job context; a model cannot override them. Evidence `kind` is `caption` or `ocr`; OCR evidence additionally identifies `media_index`. Require a supporting excerpt for each non-null asserted date, time, location, cost and URL. Check excerpts against the captured source text; they are not instructions. Fields without support become null or block publication. Do not let the model assign `USER_ID`, `CLUB_ID`, stable source keys or final event IDs. The posting account's club determines the primary hosting club.
 
-Store the validated result in `POSTS.EXTRACTED_PAYLOAD`, including warnings/review reasons. An unmapped account may still produce newsletter posts; its event proposals remain in this payload until a club mapping is curated. Do not invent a Purdue club from a username.
+Store the validated result in `POSTS.EXTRACTED_PAYLOAD`, including warnings/review reasons. If the posting account has no club yet, the backend creates one from its username before publishing events.
 
 ## 4. Ingestion and extraction flow
 
 ### 4.1 Collect posts
 
-1. Resolve a normalized account handle. The backend reuses an existing account or registers it once and saves the follow. The club mapping is a separate curated action.
+1. Resolve a normalized account handle. The backend reuses an existing account or registers it once and saves the follow. Its club is created automatically when its first event is published.
 2. Fetch up to 50 recent posts per account, initially covering 30 days. Recheck a seven-day overlap on later runs to detect edits. Use pagination and the newest stored `POSTED_AT` as an optimization, not a guarantee that older edits cannot exist.
 3. Normalize text and compute `CONTENT_HASH` as SHA-256 of canonical JSON containing caption, media IDs/permanent identifiers, and any OCR text. Exclude fetch timestamps and expiring URL query strings. A hash change or extraction-version change queues re-extraction; unchanged content only updates `SOURCE_SEEN_AT` and refreshed media URLs.
 4. Write with bound parameters through the serialized dispatcher. Update account attempt/success state. An empty valid profile is different from a failed scrape. Keep a structured log keyed by `batch_id` and account ID.
@@ -217,7 +217,7 @@ Default scheduler interval: 15 minutes during the demo, one account at a time; t
 |---|---|
 | Saved preference text | Max 2,000 characters. Preserve the user's text. Model proposes only existing tag IDs and allowlisted filters; validate with the database. |
 | Search query | Max 500 characters. Interpret supported dates/filters using server time and the user's IANA zone; query text is bound data. |
-| Unsupported terms | Return `unmatched_terms`; keep useful semantic text. Do not create tags or claim nonexistent clubs are verified. |
+| Unsupported terms | Return `unmatched_terms`; keep useful semantic text. Do not create tags or claim nonexistent clubs exist. |
 | Hard constraints | Excluded tags, followed-only, free-only and date bounds are enforced by the backend even if the model ignores them. Free-only excludes unknown cost. |
 | Private context | Only the verified caller's preferences reach that request's model context. Public Cortex Search contains no preference rows. Model/search errors never broaden access or drop hard constraints. |
 
@@ -231,7 +231,7 @@ For tags, a bounded SQL lookup of the small curated vocabulary is sufficient. An
 
 1. Load the authenticated user's preferences and follows. Resolve explicit request filters against defaults, then determine a time window in their zone (default today through `HORIZON_DAYS` days ahead).
 2. Form a candidate union: up to 100 followed-club/source events, 100 tag-match events, 100 Cortex Search results, and 100 earliest eligible fallback events. Search with explicit `q` if supplied, otherwise saved preference prose plus known tag labels. Skip semantic retrieval for empty text. Candidate limits are initial tuning values.
-3. Deduplicate by `EVENT_ID` and hydrate current rows from Snowflake. Enforce active team-verified club, published status, a live primary source, date bounds, exclusions and requested filters. Search may lag; an indexed cancelled event is still excluded by the current row. Newly published events can enter through SQL candidates before indexing finishes.
+3. Deduplicate by `EVENT_ID` and hydrate current rows from Snowflake. Enforce active club, published status, a live primary source, date bounds, exclusions and requested filters. Search may lag; an indexed cancelled event is still excluded by the current row. Newly published events can enter through SQL candidates before indexing finishes.
 4. Rank deterministically using the formula below. Include backend-generated reasons such as `followed_account`, `interest_tag`, `semantic_match` or `upcoming`; only emit a reason actually supported by this request's inputs.
 5. Return source-linked cards. Optional Cortex Agent explanations are supplementary; the card's date, price, location and links always come from current stored facts.
 
@@ -288,7 +288,7 @@ All public endpoints require the backend's verified user session. `/me` identity
 
 | Method / route | Request | Response / behavior |
 |---|---|---|
-| `GET /v1/me` | Session only | `{user_id,display_name,timezone}`; create user + default preferences on first authenticated request. |
+| `GET /v1/me` | Session only | `{user_id,email,display_name,timezone}`. The user and default preferences are created at sign-up (`POST /signup`); `POST /login` and `POST /logout` manage the Flask session. |
 | `GET /v1/me/preferences` | Session only | Saved text, structured fields and `version`. |
 | `POST /v1/preferences/preview` | `{preference_text}` | Nonpersistent proposal and unmatched terms (§5). |
 | `PUT /v1/me/preferences` | `{preference_text,interest_tag_ids,excluded_tag_ids,followed_only,free_only,horizon_days,expected_version}` | Validated saved preferences with incremented version; full replacement, no ambiguous partial merge. |
@@ -297,7 +297,7 @@ All public endpoints require the backend's verified user session. `/me` identity
 | `DELETE /v1/me/follows/{account_id}` | Known account ID | Idempotent `204`; does not alter other users or shared content. |
 | `GET /v1/tags` | Optional category | Active curated tag IDs, slugs and labels. |
 | `GET /v1/clubs` | Optional `q`, `tag_id`, `limit` | Active club metadata and associated account handles; bounded list. |
-| `GET /v1/events` | `q?`, `from_date?`, `through_date?`, `followed_only?`, `free_only?`, `limit?`, `cursor?` | Personalized structured feed below; limit default 20, max 50. Filter overrides apply to this request only. |
+| `GET /v1/events` | `q?`, `from_date?`, `through_date?`, `followed_only?`, `free_only?`, `include_past?`, `limit?`, `cursor?` | Personalized structured feed below; limit default 20, max 50. `include_past=true` (used by the calendar) keeps already-started events in the date range and marks them `is_past`. Filter overrides apply to this request only. |
 | `GET /v1/events/{event_id}` | Event ID | Current published event + sources, or `404` when draft/archived/unsupported; a supported cancelled event can return its status for an existing detail link. |
 | `GET /v1/newsletter` | `days?` (1–30), `limit?` (default 20, max 50), `cursor?` | `{items:[{post_id,account,caption,posted_at,permalink,media_urls}],summary,next_cursor,meta}`. |
 | `POST /v1/events/ask` | `{q}` | `{answer,citations:[{event_id,source_url}],warnings}`; validates citations and applies saved hard filters before returning event claims. Empty eligible grounding → answer that no matching supported events were found. |
@@ -430,7 +430,7 @@ The private key is encrypted and prompts for a passphrase. Put only the public k
 | `SNOWFLAKE_SEARCH_SERVICE`, `SNOWFLAKE_AGENT` | `HACKATHON_DB.APP.EVENT_SEARCH`, `HACKATHON_DB.APP.EVENT_ASSISTANT`. |
 | `SNOWFLAKE_EXTRACT_MODEL`, `SNOWFLAKE_SUMMARY_MODEL` | Models tested in this account; extraction version records model/prompt versions. |
 | `INTERNAL_INGEST_TOKEN`, `CURSOR_SIGNING_SECRET` | Separate random backend secrets for worker requests and cursors. |
-| Existing auth-provider variables | Session verification keys/configuration belonging to the chosen backend auth system. |
+| `FLASK_SECRET_KEY` | Random string used by Flask to sign the session cookie. Required in any shared deployment. |
 
 Snowflake connector key-pair login does not automatically create a REST bearer token. For direct Search/Agent REST requests, implement Snowflake key-pair JWT authentication (or configured OAuth); build the JWT with the proper account/user identifiers and public-key fingerprint. Send `Authorization: Bearer <short-lived-jwt>`, `X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT`, and `X-Snowflake-Role: HACKATHON_API` for API-process requests. Never use the private key string itself as the bearer token. The chosen REST role must have agent/service privileges; the connector's active role is not automatically carried into a separate HTTP request. [Agent authentication and role context](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-setup).
 
@@ -513,6 +513,6 @@ These checks are required integration work, **not results already obtained**. Us
 
 Prepared locally: this spec, 11-table DDL, scoped grants, bootstrap, Search/Agent definitions, read-only smoke queries, and a service-user key template. Local checks can confirm file/table/column/contract consistency; they cannot validate an account's parser, privileges, region support, enabled models, index readiness, latency or billing.
 
-Still required in your environment: run the checklist, choose enabled model(s), register public keys, configure existing auth, seed labeled fixtures or ingest approved live posts, and execute the acceptance matrix. No Snowflake resources, users or credentials were created by producing this handoff.
+Still required in your environment: run the checklist, choose enabled model(s), register public keys, set `FLASK_SECRET_KEY`, seed labeled fixtures or ingest approved live posts, and execute the acceptance matrix. No Snowflake resources, users or credentials were created by producing this handoff.
 
 Official Snowflake sources above were checked on **2026-10-25**. Their URLs are included at the relevant setup/behavior contracts so teammates can verify syntax and account-specific availability without depending on this conversation.

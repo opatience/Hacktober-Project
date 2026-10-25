@@ -110,7 +110,7 @@ class Store:
             for tag_id, label, category in TAG_SEED:
                 self.connection.execute("INSERT OR IGNORE INTO TAGS (TAG_ID, SLUG, LABEL, CATEGORY) VALUES (?, ?, ?, ?)", (tag_id, tag_id, label, category))
             for username, name in CLUB_SEED:
-                self.connection.execute("INSERT OR IGNORE INTO CLUBS (club_id,slug,name,is_verified) VALUES (?,?,?,TRUE)", ("club-" + username, username, name))
+                self.connection.execute("INSERT OR IGNORE INTO CLUBS (club_id,slug,name) VALUES (?,?,?)", ("club-" + username, username, name))
                 self.connection.execute("INSERT OR IGNORE INTO INSTAGRAM_ACCOUNTS (account_id,username,club_id,display_name,profile_url) VALUES (?,?,?,?,?)", ("account-" + username, username, "club-" + username, name, f"https://www.instagram.com/{username}/"))
                 self.connection.execute("INSERT OR IGNORE INTO CLUB_TAGS (club_id,tag_id,source) VALUES (?,?,'manual')", ("club-" + username, "workshop"))
 
@@ -158,6 +158,26 @@ class Store:
         assignments = [field + ("=PARSE_JSON(?)" if self.backend == "snowflake" and field in JSON_FIELDS else "=?") for field in values]
         bound = [json.dumps(value, ensure_ascii=False) if field in JSON_FIELDS and value is not None else value for field, value in values.items()]
         return self._query(connection, f"UPDATE {table} SET {','.join(assignments)} WHERE {where}", bound + list(params))
+
+    def create_account(self, email, password_hash):
+        """Email/password sign-up; creates USERS + default USER_PREFERENCES together. None if the email is taken."""
+        with self._unit(write=True) as connection:
+            if self._query(connection, "SELECT user_id FROM USERS WHERE email=?", (email,)):
+                return None
+            user = {"user_id": _uuid(), "auth_subject": "local:" + email, "email": email, "password_hash": password_hash, "display_name": email.split("@")[0], "timezone": ZONE, "created_at": _now(), "updated_at": _now()}
+            self._insert(connection, "USERS", user)
+            self._insert(connection, "USER_PREFERENCES", {"user_id": user["user_id"], "preference_text": "", "interest_tag_ids": [], "excluded_tag_ids": [], "followed_only": False, "free_only": False, "horizon_days": 30, "version": 1, "updated_at": _now()})
+            return user
+
+    def user_by_email(self, email):
+        with self._unit() as connection:
+            rows = self._query(connection, "SELECT * FROM USERS WHERE email=? AND deleted_at IS NULL", (email,))
+            return rows[0] if rows else None
+
+    def user_by_id(self, user_id):
+        with self._unit() as connection:
+            rows = self._query(connection, "SELECT user_id,email,display_name,timezone FROM USERS WHERE user_id=? AND deleted_at IS NULL", (user_id,))
+            return rows[0] if rows else None
 
     def current_user(self, subject, display_name="Student"):
         if not isinstance(subject, str) or not subject or len(subject) > 512:
@@ -267,7 +287,7 @@ class Store:
 
     def events(self):
         with self._unit() as connection:
-            events = self._query(connection, "SELECT e.*,c.name AS club_name,c.is_verified,c.is_active AS club_active FROM EVENTS e JOIN CLUBS c ON c.club_id=e.club_id WHERE e.status IN ('published','cancelled') AND c.is_active=TRUE AND c.is_verified=TRUE ORDER BY e.start_at,e.event_id")
+            events = self._query(connection, "SELECT e.*,c.name AS club_name,c.is_active AS club_active FROM EVENTS e JOIN CLUBS c ON c.club_id=e.club_id WHERE e.status IN ('published','cancelled') AND c.is_active=TRUE ORDER BY e.start_at,e.event_id")
             links = self._query(connection, "SELECT s.*,p.permalink,p.account_id,a.username,p.raw_payload FROM EVENT_SOURCES s JOIN POSTS p ON p.post_id=s.post_id JOIN INSTAGRAM_ACCOUNTS a ON a.account_id=p.account_id WHERE p.deleted_at IS NULL AND s.source_content_hash=p.content_hash")
             event_tags = self._query(connection, "SELECT et.event_id,t.tag_id,t.slug,t.label,t.category FROM EVENT_TAGS et JOIN TAGS t ON t.tag_id=et.tag_id WHERE t.is_active=TRUE")
             club_tags = self._query(connection, "SELECT ct.club_id,t.tag_id,t.slug,t.label,t.category FROM CLUB_TAGS ct JOIN TAGS t ON t.tag_id=ct.tag_id WHERE t.is_active=TRUE")
@@ -326,11 +346,22 @@ class Store:
                     report["inserted"] += 1
                 self._update(connection, "INSTAGRAM_ACCOUNTS", {"ingestion_status": "ok", "last_attempt_at": _now(), "last_success_at": _now(), "last_error": None, "updated_at": _now()}, "account_id=?", (account["account_id"],))
                 club = clubs.get(account.get("club_id"))
-                if club and club.get("is_active") and club.get("is_verified") and not retain_extraction:
+                if club is None and (post.get("events") or post.get("event")):
+                    club = self._club_for(connection, account, clubs)
+                if club and club.get("is_active") and not retain_extraction:
                     report["events"] += self._persist_events(connection, post_id, values, post, club, report["warnings"])
-                elif post.get("events") or post.get("event"):
-                    report["warnings"].append(f"@{account['username']}: event awaits a curated club mapping.")
         return report
+
+    def _club_for(self, connection, account, clubs):
+        """Every account is its own club, created the first time it has an event."""
+        club = next((row for row in clubs.values() if row["slug"] == account["username"]), None)
+        if club is None:
+            club = {"club_id": "club-" + account["username"], "slug": account["username"], "name": account.get("display_name") or account["username"], "is_active": True, "created_at": _now(), "updated_at": _now()}
+            self._insert(connection, "CLUBS", club)
+            clubs[club["club_id"]] = club
+        self._update(connection, "INSTAGRAM_ACCOUNTS", {"club_id": club["club_id"], "updated_at": _now()}, "account_id=?", (account["account_id"],))
+        account["club_id"] = club["club_id"]
+        return club
 
     def _persist_events(self, connection, post_id, stored, post, club, warnings):
         proposals = post.get("events") or ([post["event"]] if post.get("event") else [])

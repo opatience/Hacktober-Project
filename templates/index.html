@@ -22,7 +22,10 @@
             <a class="wordmark" href="/" aria-label="Purdue Printed home">Purdue Printed</a>
             <p class="header-note">A quick compiler of your Purdue Insta feed.</p>
           </div>
-          <span class="brand-seal" aria-hidden="true">P</span>
+          <form method="post" action="{{ url_for('logout') }}" class="account-box">
+            <span class="help-text">{{ user.email }}</span>
+            <button class="button secondary" type="submit">Log out</button>
+          </form>
         </header>
         <div class="paper-meta"><span>Purdue University · West Lafayette</span><span>Clubs, posts &amp; events</span></div>
         <section class="following-section" aria-labelledby="following-heading">
@@ -80,7 +83,7 @@
           </div>
           <div id="calendar-panel" class="view-panel" role="tabpanel" aria-labelledby="calendar-tab" hidden>
             <div class="panel-intro"><h2>Your event calendar</h2><p>Events with a known date. Times are shown in the event’s local time.</p></div>
-            <div id="calendar"></div><p id="calendar-fallback" class="help-text" hidden>The calendar could not load. Your upcoming events are available in the event list.</p>
+            <div id="calendar"></div><p class="help-text">Past events from the last 45 days are shown in grey.</p><p id="calendar-fallback" class="help-text" hidden>The calendar could not load. Your upcoming events are available in the event list.</p>
           </div>
         </section>
         <footer class="paper-footer"><button id="refresh-button" class="button primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.6M20 4v7h-7"/></svg><span>Refresh posts</span></button><span>Stay curious. Show up.</span></footer>

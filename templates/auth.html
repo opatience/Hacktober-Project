@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Purdue Printed · {{ "Sign up" if mode == "signup" else "Log in" }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <main class="page-shell">
+    <div class="paper-frame">
+      <div class="paper">
+        <header class="site-header">
+          <div>
+            <a class="wordmark" href="/">Purdue Printed</a>
+            <p class="header-note">A quick compiler of your Purdue Insta feed.</p>
+          </div>
+          <span class="brand-seal" aria-hidden="true">P</span>
+        </header>
+        <form method="post" class="auth-form">
+          <h2>{{ "Create your account" if mode == "signup" else "Log in" }}</h2>
+          {% for msg in get_flashed_messages() %}<div class="error-message" role="alert">{{ msg }}</div>{% endfor %}
+          <input name="email" type="email" placeholder="Email" required autofocus maxlength="320" value="{{ request.form.email or '' }}">
+          <input name="password" type="password" placeholder="Password (8+ characters)" required minlength="8">
+          {% if mode == "signup" %}
+            <button class="button primary" type="submit">Create account</button>
+            <p class="help-text">Already have an account? <a href="{{ url_for('login') }}">Log in</a></p>
+          {% else %}
+            <button class="button primary" type="submit">Log in</button>
+            <p class="help-text">New here? <a href="{{ url_for('signup') }}">Sign up</a></p>
+          {% endif %}
+        </form>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

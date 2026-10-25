@@ -13,7 +13,7 @@ Completed 2026-10-25 for the selected Flask hackathon scope. App: http://127.0.0
 
 ## Implemented behavior
 
-The app stores users, preferences, follows, club mappings, posts, canonical events, event-source evidence, and tags in Snowflake. Browser sessions have a generated guest identity; full account login was outside the chosen deadline scope.
+The app stores users, preferences, follows, club mappings, posts, canonical events, event-source evidence, and tags in Snowflake. Users sign up and log in with email and password (`USERS.PASSWORD_HASH`, werkzeug hash). Every followed account gets its own club automatically, so all followed accounts can publish calendar events.
 
 The source cache contains 45 actual public Instagram posts for Purdue Hackers, CS Undergraduate Student Board, Build Purdue, and Hello World Purdue. Four exact post images were read with macOS Vision OCR. A real Cortex extraction of those four posts committed five source-validated occurrences. Past occurrences are removed from the upcoming feed at read time. Source mode remains attached to posts; a cached capture is not described as a fresh scrape.
 
@@ -36,6 +36,6 @@ From this directory, run `.venv/bin/python app.py`. The local `.env` already sel
 
 `python snowflake/apply.py --help` documents setup. `python scripts/import_cached.py --rules` reloads source-backed caption/OCR extraction; omit `--rules` to use the configured Cortex model. `scripts/ocr.swift` can repeat OCR for supplied local image paths.
 
-The implementation uses one process with serialized writes and an explicit refresh action. Scheduled workers, full user login, durable pagination, email delivery, and production hosting remain deferred. Frontend design work was stopped when the user assigned it to another agent. The `/v1` route contracts in `app.py` are the frontend integration surface.
+The implementation uses one process with serialized writes and an explicit refresh action. Scheduled workers, durable pagination, email delivery, and production hosting remain deferred. Frontend design work was stopped when the user assigned it to another agent. The `/v1` route contracts in `app.py` are the frontend integration surface.
 
 Changes remain uncommitted. Deployment records are in the system temporary directory as `snowflask-setup.jsonl`.

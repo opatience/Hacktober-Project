@@ -28,9 +28,9 @@ app does **not** mean Snowflake, Cortex Search, or model inference is connected.
 With local storage, caption rules extract only supported dates that include a
 year. A post without sufficient event evidence still appears in the newsletter.
 
-Set a stable random `FLASK_SECRET_KEY` in `.env` to preserve signed guest sessions
-across restarts. The current app uses a browser guest session. It does not include
-real account login or cross-device account recovery.
+Sign up at `/signup` with an email and password (hashed into `USERS.PASSWORD_HASH`).
+Set a stable random `FLASK_SECRET_KEY` in `.env` so login sessions survive restarts.
+An account provisioned before login was added needs `snowflake/007_password_login.sql`.
 
 ## Connect the Snowflake account
 
@@ -75,9 +75,8 @@ existing local Instaloader session.
 
 Event extraction currently reads captions only. It does not perform image OCR.
 A source must support the event date and year; missing time, location, or cost
-stays unknown. Free food is not treated as free admission. Only accounts mapped
-to curated clubs can publish club events, while other followed accounts can
-still contribute newsletter posts. Edited or repeated posts are persisted
+stays unknown. Free food is not treated as free admission. Every followed account gets its own club automatically and can publish
+calendar events. Edited or repeated posts are persisted
 through the shared serialized writer.
 
 Saved text and search phrases affect ranking. The explicit **Free events only**,
@@ -86,7 +85,7 @@ Excluded topics also override a follow or relevance score.
 
 ## Current scope
 
-The app includes persistent guest follows/preferences, on-demand ingestion,
+The app includes email/password accounts with persistent follows/preferences, on-demand ingestion,
 newsletter posts, evidence-checked caption events, deterministic ranking,
 Snowflake/local storage adapters, and an optional Cortex Search integration.
 
@@ -105,7 +104,7 @@ actual environment state.
 
 | File | Purpose |
 | --- | --- |
-| `app.py` | Flask routes, signed guest sessions, refresh orchestration |
+| `app.py` | Flask routes, email/password login, refresh orchestration |
 | `storage.py` / `snowflake_client.py` | Serialized persistence and scoped Snowflake access |
 | `feed.py` | Hard event filters, preference preview, and ranking |
 | `scraper.py` / `ai.py` / `dates.py` | Public-post ingestion and validated caption extraction |

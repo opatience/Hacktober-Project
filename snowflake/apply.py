@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
-INITIAL = ("001_bootstrap.sql", "002_schema.sql", "003_access.sql")
+INITIAL = ("001_bootstrap.sql", "002_schema.sql", "003_access.sql", "007_password_login.sql")
 
 
 def connect():
